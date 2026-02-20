@@ -1,37 +1,16 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
-from dotenv import load_dotenv
 import google.generativeai as genai
 
-# -------------------- CONFIG --------------------
-load_dotenv()
-API_KEY = os.getenv("GOOGLE_API_KEY")
+# ================= CONFIG =================
+st.set_page_config(page_title="TheraLink AI", page_icon="🧠", layout="wide")
 
-if not API_KEY:
-    st.error("GOOGLE_API_KEY not found. Check your .env file.")
-    st.stop()
-
+# Get API key from Streamlit Secrets
+API_KEY = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=API_KEY)
 
-st.set_page_config(
-    page_title="TheraLink AI",
-    page_icon="🧠",
-    layout="wide"
-)
-
-# -------------------- STYLE --------------------
-st.markdown("""
-<style>
-.block-container { padding-top: 1.5rem; }
-.badge-green { color: white; background: #2ecc71; padding: 0.3rem 0.7rem; border-radius: 12px; }
-.badge-yellow { color: black; background: #f1c40f; padding: 0.3rem 0.7rem; border-radius: 12px; }
-.badge-red { color: white; background: #e74c3c; padding: 0.3rem 0.7rem; border-radius: 12px; }
-</style>
-""", unsafe_allow_html=True)
-
-# -------------------- QUESTIONS --------------------
+# ================= QUESTIONS =================
 QUESTIONS = [
     "Mood stability",
     "Anxiety intensity",
@@ -55,11 +34,11 @@ QUESTIONS = [
     "Overall well-being"
 ]
 
-# -------------------- SESSION STATE --------------------
+# ================= SESSION STATE =================
 if "patients" not in st.session_state:
     st.session_state["patients"] = {}
 
-# -------------------- SIDEBAR --------------------
+# ================= SIDEBAR =================
 st.sidebar.title("🧠 TheraLink AI")
 role = st.sidebar.radio("Select Role", ["Patient", "Doctor"])
 
@@ -72,18 +51,18 @@ if role == "Patient":
     patient_id = st.text_input("Patient ID", value="patient_001")
 
     responses = []
-    progress = st.progress(0)
-
-    for i, q in enumerate(QUESTIONS):
-        val = st.slider(q, 1, 5, 3)
-        responses.append(val)
-        progress.progress((i + 1) / len(QUESTIONS))
+    for q in QUESTIONS:
+        responses.append(st.slider(q, 1, 5, 3))
 
     st.markdown("### 💬 Express Your Feelings")
     patient_text = st.text_area(
-        "Describe your emotions, stressors, and experiences today...",
+        "Describe your emotions and thoughts today...",
         height=150
     )
+
+    # Emergency notice
+    if "suicide" in patient_text.lower():
+        st.error("If you are in immediate danger, contact emergency services immediately.")
 
     if st.button("Submit Check-In"):
         score = round(np.mean(responses), 2)
@@ -138,22 +117,8 @@ if role == "Doctor":
         latest_text = history.iloc[-1]["Text"]
         trend_scores = history["Score"].tolist()
 
-        st.markdown("---")
-
-        col1, col2 = st.columns([3,1])
-
-        with col1:
-            st.line_chart(history.set_index("Date")["Score"])
-
-        with col2:
-            if latest_score <= 2:
-                st.markdown("<span class='badge-red'>HIGH RISK</span>", unsafe_allow_html=True)
-            elif latest_score <= 3.5:
-                st.markdown("<span class='badge-yellow'>MODERATE RISK</span>", unsafe_allow_html=True)
-            else:
-                st.markdown("<span class='badge-green'>LOW RISK</span>", unsafe_allow_html=True)
-
-            st.metric("Wellness Score", latest_score)
+        st.line_chart(history.set_index("Date")["Score"])
+        st.metric("Wellness Score", latest_score)
 
         st.markdown("### Patient Narrative")
         st.write(latest_text if latest_text else "No narrative provided.")
@@ -162,40 +127,34 @@ if role == "Doctor":
         st.markdown("### 🧠 AI Clinical Risk & Criticality Report")
 
         def get_model():
-            try:
-                models = [
-                    m.name for m in genai.list_models()
-                    if "generateContent" in m.supported_generation_methods
-                ]
-
-                for preferred in [
-                    "models/gemini-1.5-flash",
-                    "models/gemini-1.5-pro",
-                    "models/gemini-pro"
-                ]:
-                    if preferred in models:
-                        return preferred
-
-                return models[0] if models else None
-            except:
-                return None
+            models = [
+                m.name for m in genai.list_models()
+                if "generateContent" in m.supported_generation_methods
+            ]
+            for preferred in [
+                "models/gemini-1.5-flash",
+                "models/gemini-1.5-pro",
+                "models/gemini-pro"
+            ]:
+                if preferred in models:
+                    return preferred
+            return models[0] if models else None
 
         model_name = get_model()
 
         if not model_name:
             st.error("No compatible Gemini model available.")
         else:
-            try:
-                model = genai.GenerativeModel(model_name.replace("models/", ""))
+            model = genai.GenerativeModel(model_name.replace("models/", ""))
 
-                prompt = f"""
+            prompt = f"""
 You are a clinical suicide risk and behavioral assessment AI assisting a licensed psychiatrist.
 
-Analyze the following patient data carefully.
+Analyze the patient data carefully.
 
 Current Wellness Score (1–5): {latest_score}
 Historical Scores: {trend_scores}
-Behavioral Metrics (20 values): {latest_responses}
+Behavioral Metrics: {latest_responses}
 
 Patient Narrative:
 {latest_text if latest_text.strip() else "No narrative provided."}
@@ -204,47 +163,31 @@ Generate a structured professional clinical report including:
 
 1. Current Psychological Condition
 2. Suicide/Self-Harm Risk Level (Low / Moderate / High / Critical)
-3. Severity Assessment (Explain how critical the current state is)
+3. Severity Assessment
 4. Immediate Risk Indicators
 5. Possible Short-Term Outcomes if Unaddressed
 6. Clinical Attention Priorities
 7. Professional Hints for the Treating Doctor
 
 Rules:
-- If suicidal ideation appears, clearly classify severity.
+- Clearly classify severity if suicidal ideation is present.
 - Use firm clinical tone.
-- Do NOT provide treatment instructions to patient.
-- Provide actionable insights only for the doctor.
+- Do NOT give treatment advice to patient.
 """
 
-                response = model.generate_content(
-                    prompt,
-                    generation_config={
-                        "temperature": 0.15,
-                        "max_output_tokens": 900
-                    }
-                )
+            response = model.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": 0.15,
+                    "max_output_tokens": 900
+                }
+            )
 
-                if hasattr(response, "text") and response.text:
-                    st.write(response.text)
-                else:
-                    st.warning("AI did not return a valid report.")
-
-            except Exception as e:
-                st.error(f"AI Generation Error: {e}")
-
-        # ================= DOCTOR CONTROLS =================
-        st.markdown("### Clinician Verification")
-        verify = st.toggle("Verify AI Report", value=pdata.get("verified", False))
-        pdata["verified"] = verify
-
-        if verify:
-            st.success("Report Verified")
+            st.write(response.text)
 
         st.markdown("### Doctor Notes")
-        notes = st.text_area(
+        pdata["notes"] = st.text_area(
             "Clinical session notes",
             value=pdata.get("notes", ""),
             height=150
         )
-        pdata["notes"] = notes
